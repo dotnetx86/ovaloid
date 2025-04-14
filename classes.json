@@ -1,0 +1,16 @@
+{
+    "Areaer": {
+        "Description": "The deafult free class. Attacks by creating an area wave damaging anyone it hits or by shooting a projectile",
+        "AbilityDamage": 50,
+        "AbilityCooldown": 2,
+        "ProjectileDamage": 50,
+        "ProjectileCooldown": 1
+    },
+    "Speeder": {
+        "Description": "A faster and harder class for experienced players. Attacks by dashing in the enemy or by shooting a projectile",
+        "AbilityDamage": 50,
+        "AbilityCooldown": 5,
+        "ProjectileDamage": 50,
+        "ProjectileCooldown": 5
+    }
+}
