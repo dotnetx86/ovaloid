@@ -1,5 +1,6 @@
 import tkinter as tk
 import websocket
+from time import time
 from threading import Thread
 from math import hypot
 from json import load, loads, dumps
@@ -7,27 +8,33 @@ from json import load, loads, dumps
 WIDTH, HEIGHT = 1024, 768
 
 class Projectile:
-    def __init__(self, canvas, x, y, dx, dy, speed=15):
+    def __init__(self, canvas: tk.Canvas, coords: tuple, direction: tuple, speed, multiplayer: None):
         self.canvas = canvas
         self.speed = speed
-        self.dx = dx
-        self.dy = dy
-        self.shape = canvas.create_oval(x - 5, y - 5, x + 5, y + 5, fill="blue")
+        self.dx, self.dy = direction
+        self.multiplayer = multiplayer
+        self.shape = self.canvas.create_oval(*coords, fill="blue")
         self.move()
 
     def move(self):
         self.canvas.move(self.shape, self.dx * self.speed, self.dy * self.speed)
         x1, y1, x2, y2 = self.canvas.coords(self.shape)
+        if self.multiplayer:
+            enclosed = self.canvas.find_enclosed(x1, y1, x2, y2)
+            for plrId, plr in self.multiplayer.players.items():
+                if plr["shape"] in enclosed:
+                    
+                    self.multiplayer.send({ "type": "kill", "data": { "id": self.multiplayer.playerId, "player": plrId } })
         if x2 < 0 or x1 > WIDTH or y2 < 0 or y1 > HEIGHT:
             self.canvas.delete(self.shape)
         else:
             self.canvas.after(30, self.move)
 
 class BasePlayer:
-    def __init__(self, canvas: tk.Canvas, x, y):
+    def __init__(self, canvas: tk.Canvas, coords: tuple):
         self.canvas = canvas
         self.step = 10
-        self.shape = canvas.create_oval(x, y, x + 50, y + 50, fill="red")
+        self.shape = canvas.create_oval(*coords, fill="red")
         self.group = [self.shape]
 
 
@@ -36,40 +43,33 @@ class BasePlayer:
         return (x1 + x2) / 2, (y1 + y2) / 2
 
 
-    def area_attack(self):
+    def area_attack(self, check=None):
         coords = self.canvas.coords(self.shape)
-        attack = self.canvas.create_oval(coords, outline="red", fill="")
+        attack = self.canvas.create_oval(coords, outline="red", fill="", width=3)
         self.group.append(attack)
 
         def expand(i):
             coords = self.canvas.coords(self.shape)
-            self.canvas.coords(attack, coords[0] + i, coords[1] + i, coords[2] - i, coords[3] - i)
+            coords = (coords[0] + i, coords[1] + i, coords[2] - i, coords[3] - i)
+            self.canvas.coords(attack, *coords)
+            if (check): check(coords)
             if i >= 100:
                 self.canvas.delete(attack)
                 return 
-            self.canvas.after(50, expand, i + 10)
+            self.canvas.after(10 if i < 95 else 100, expand, i + 5)
 
         expand(1)
         return attack
-        
-    def shoot(self, event):
-        px, py = self.get_center()
-        dx = event.x - px
-        dy = event.y - py
-        distance = hypot(dx, dy)
-
-        if distance == 0:
-            return
-
-        dx /= distance
-        dy /= distance
-
-        Projectile(self.canvas, px, py, dx, dy)
 
 class Player(BasePlayer):
-    def __init__(self, canvas, multiplayer, x, y):
-        super().__init__(canvas, x, y)
+    def __init__(self, canvas, plrClass, multiplayer, coords: tuple):
+        super().__init__(canvas, coords)
+        self.plrClass = plrClass
         self.multiplayer = multiplayer
+        self.area_last = 0
+        self.dash_last = 0
+        self.shoot_last = 0
+        
         
         self.canvas.bind("<Button-1>", self.shoot)
     
@@ -84,22 +84,48 @@ class Player(BasePlayer):
                 self.canvas.coords(member, new_x, new_y, x2, y2)
     
     def area_attack(self):
+        now = time()
+        if now - self.area_last < self.plrClass["AbilityCooldown"]: return
+        
+        self.area_last = now
         super().area_attack()
         #check enemies inside
         
         
     
     def dash(self, on=True):
-        if not on:
+        now = time()
+        if not on or now - self.dash_last < self.plrClass["AbilityCooldown"]:
             self.step = 10
             return
         
+        self.dash_last = now
         self.step = 30
         self.canvas.after(5000, self.dash, False)
+    
+    def shoot(self, event):
+        now = time()
+        if now - self.shoot_last < self.plrClass["ProjectileCooldown"]: return
+        
+        self.shoot_last = now
+        
+        px, py = self.get_center()
+        dx = event.x - px
+        dy = event.y - py
+        distance = hypot(dx, dy)
+
+        if distance == 0:
+            return
+
+        dx /= distance
+        dy /= distance
+        
+        self.multiplayer.send({ "type": "projectile", "data": { "coords": [px - 5, py - 5, px + 5, py + 5], "direction": [dx, dy], "speed": self.plrClass["ProjectileSpeed"] } })
+        Projectile(self.canvas, (px - 5, py - 5, px + 5, py + 5), (dx, dy), self.plrClass["ProjectileSpeed"], self.multiplayer.players, self.multiplayer.playerId)
         
 class Enemy(BasePlayer):
-    def __init__(self, canvas, x, y):
-        super().__init__(canvas, x, y)
+    def __init__(self, canvas, coords: tuple):
+        super().__init__(canvas, coords)
         
 class Multiplayer:
     def __init__(self, canvas):
@@ -118,20 +144,31 @@ class Multiplayer:
         msg["data"]["id"] = self.playerId
         self.ws.send(dumps(msg))
     
-    def on_message(self, ws, msg: bytes):
-        print(msg)
-        msg = loads(msg)
-        playerId = msg["data"]["id"]
+    def on_message(self, ws, msg: str):
+        msg: dict = loads(msg)
+        data = msg["data"]
+        playerId = data["id"]
         
         match msg["type"]:
             case "login":
+                print(msg)
                 self.playerId = playerId
+                self.player[playerId] = { "shape":  }
+                for plrId, plrData in data["players"].items():
+                    print(plrData)
+                    if plrId == playerId:
+                        continue
+                    
+                    plr = Enemy(self.canvas, tuple(plrData["coords"]))
+                    self.players[plrId] = { "shape": plr }
             case "new" | "respawn":
-                plr = Enemy(self.canvas, WIDTH / 2, HEIGHT / 2)
-                self.players[playerId] = plr
+                plr = Enemy(self.canvas, data["coords"])
+                self.players[playerId] = { "shape": plr }
             case "move":
                 plr = self.players[playerId]
-                canvas.coords(plr.shape, *msg["data"]["coords"])
+                self.canvas.coords(plr["shape"].shape, *data["coords"])
+            case "projectile":
+                proj = Projectile(self.canvas, tuple(data["coords"]), tuple(data["direction"]), data["speed"])
 
     def on_open(self, ws):
         self.ws.send(dumps({ "type": "login" }))
@@ -141,13 +178,13 @@ class Multiplayer:
         print("Disconnected")
 
 class Game:
-    def __init__(self, root, canvas):
+    def __init__(self, root, canvas, plrClass):
         self.root = root
         self.canvas = canvas
         self.canvas.pack()
-
+                
         self.multiplayer = Multiplayer(canvas)
-        self.player = Player(self.canvas, self.multiplayer, WIDTH / 2, HEIGHT / 2)
+        self.player = Player(self.canvas, plrClass, self.multiplayer, (WIDTH / 2, HEIGHT / 2, WIDTH / 2 + 50, HEIGHT / 2 + 50))
         self.holding_keys = set()
 
         self.root.bind("<KeyPress>", self.keypress)
@@ -228,7 +265,7 @@ class Menu:
             return
         
         self.canvas.delete("all")
-        Game(self.root, self.canvas)
+        Game(self.root, self.canvas, self.classes[self.selected])
     
     def notify(self, msg):
         self.canvas.itemconfig(self.notif, text=msg)

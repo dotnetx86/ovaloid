@@ -3,13 +3,15 @@
         "Description": "The deafult free class. Attacks by creating an area wave damaging anyone it hits or by shooting a projectile",
         "AbilityDamage": 50,
         "AbilityCooldown": 2,
+        "ProjectileSpeed": 15,
         "ProjectileDamage": 50,
-        "ProjectileCooldown": 1
+        "ProjectileCooldown": 0.5
     },
-    "Speeder": {
+    "Dasher": {
         "Description": "A faster and harder class for experienced players. Attacks by dashing in the enemy or by shooting a projectile",
         "AbilityDamage": 50,
         "AbilityCooldown": 5,
+        "ProjectileSpeed": 30,
         "ProjectileDamage": 50,
         "ProjectileCooldown": 5
     }
