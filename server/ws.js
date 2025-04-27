@@ -11,18 +11,19 @@ wss.on('connection', function connection(ws) {
 
   players[clientId] = {
     socket: ws,
-    coords: [WIDTH / 2, HEIGHT / 2, WIDTH / 2 + 50, HEIGHT / 2 + 50]
+    coords: [WIDTH / 2, HEIGHT / 2, WIDTH / 2 + 50, HEIGHT / 2 + 50],
+    health: 100
   };
   
-  function sendAll(msg) {
+  function sendAll(msg, all=false) {
     Object.entries(players).forEach(([id, data]) => {
-      if (id === clientId) return;
+      if (id === clientId && !all) return;
   
       data.socket.send(JSON.stringify(msg));
     })
   }
 
-  sendAll({ type: "new", data: { id: clientId, coords: players[clientId].coords } });
+  sendAll({ type: "new", data: { id: clientId, coords: players[clientId].coords, health: players[clientId].health } });
   
   console.log('New client connected');
 
@@ -48,11 +49,22 @@ wss.on('connection', function connection(ws) {
       case "projectile":
         sendAll({ type: msg.type, data: { id: clientId, coords: msg.data.coords, direction: msg.data.direction, speed: msg.data.speed } });
         break;
+
+      case "health":
+        if (msg.data.health <= 0) {
+          players[clientId].health = 0
+          sendAll({ type: "death", data: { id: clientId } }, true)
+        }
+
+        players[clientId].health = msg.data.health
+        sendAll({ type: msg.type, data: { id: clientId, health: msg.data.health } })
+        break;
     }
   });
 
   ws.on('close', () => {
     delete players[clientId]
+    sendAll({ type: "leave", data: { id: clientId } })
     console.log(`Client disconnected clients: ${JSON.stringify(players)}`);
   });
 });
