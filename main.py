@@ -1,6 +1,6 @@
 import tkinter as tk
 import websocket
-from time import time
+from time import time, sleep
 from threading import Thread
 from math import hypot
 from json import load, loads, dumps
@@ -15,6 +15,9 @@ class Projectile:
         self.multiplayer = multiplayer
         self.shape = self.canvas.create_oval(*coords, fill="blue")
         self.move()
+        
+    def __del__(self):
+        self.canvas.delete(self.shape)
 
     def move(self):
         self.canvas.move(self.shape, self.dx * self.speed, self.dy * self.speed)
@@ -26,7 +29,7 @@ class Projectile:
                     
                     self.multiplayer.send({ "type": "kill", "data": { "id": self.multiplayer.playerId, "player": plrId } })
         if x2 < 0 or x1 > WIDTH or y2 < 0 or y1 > HEIGHT:
-            self.canvas.delete(self.shape)
+            del self
         else:
             self.canvas.after(30, self.move)
 
@@ -34,9 +37,25 @@ class BasePlayer:
     def __init__(self, canvas: tk.Canvas, coords: tuple):
         self.canvas = canvas
         self.step = 10
-        self.shape = canvas.create_oval(*coords, fill="red")
-        self.group = [self.shape]
-
+        self.shape = canvas.create_oval(*coords, fill="red", width=2)
+        self.health = 100
+        self.healthBar = canvas.create_oval(0, 0, 0, 0, fill="black")
+        self.group = [self.shape, self.healthBar]
+        
+    def __del__(self):
+        print("dele")
+        for item in self.group:
+            self.canvas.delete(item)
+            
+    def update_health(self, health):
+        self.health = health
+        shapePos = self.canvas.coords(self.shape)
+        size = [(shapePos[2] - shapePos[0]) / 2, (shapePos[3] - shapePos[1]) / 2]
+        center = [shapePos[0] + size[0], shapePos[1] + size[1]]
+        # cx, cy = ((item * (1 / 100)) / 2 for item in center)
+        rad = [size[0] * ((100 - self.health) / 100), size[1] * ((100 - self.health) / 100)]
+        
+        self.canvas.coords(self.healthBar, center[0] - rad[0], center[1] - rad[1], center[0] + rad[0], center[1] + rad[1])
 
     def get_center(self):
         x1, y1, x2, y2 = self.canvas.coords(self.shape)
@@ -50,13 +69,13 @@ class BasePlayer:
 
         def expand(i):
             coords = self.canvas.coords(self.shape)
-            coords = (coords[0] + i, coords[1] + i, coords[2] - i, coords[3] - i)
+            coords = (coords[0] - i, coords[1] - i, coords[2] + i, coords[3] + i)
             self.canvas.coords(attack, *coords)
             if (check): check(coords)
-            if i >= 100:
+            if i >= 50:
                 self.canvas.delete(attack)
                 return 
-            self.canvas.after(10 if i < 95 else 100, expand, i + 5)
+            self.canvas.after(10 if i < 45 else 100, expand, i + 5)
 
         expand(1)
         return attack
@@ -64,6 +83,7 @@ class BasePlayer:
 class Player(BasePlayer):
     def __init__(self, canvas, plrClass, multiplayer, coords: tuple):
         super().__init__(canvas, coords)
+        multiplayer.players[multiplayer.playerId] = { "shape": self }
         self.plrClass = plrClass
         self.multiplayer = multiplayer
         self.area_last = 0
@@ -73,6 +93,10 @@ class Player(BasePlayer):
         
         self.canvas.bind("<Button-1>", self.shoot)
     
+    def update_health(self, health):
+        self.multiplayer.send({ "type": "health", "data": { "health": health } })
+        super().update_health(health)
+    
     def move(self, dx, dy):
         coords = self.canvas.coords(self.shape)
         new_x, x2 = (item + dx * self.step for item in coords[::2])
@@ -80,8 +104,12 @@ class Player(BasePlayer):
 
         if 0 <= new_x <= WIDTH - 50 and 0 <= new_y <= HEIGHT - 50:
             self.multiplayer.send({ "type": "move", "data": { "coords": [new_x, new_y, x2, y2] } })
-            for member in self.group:
-                self.canvas.coords(member, new_x, new_y, x2, y2)
+            
+            self.canvas.coords(self.shape, new_x, new_y, x2, y2)
+            members = self.group.copy()
+            members.pop(0)
+            for member in members:
+                self.canvas.move(member, dx * self.step, dy * self.step)
     
     def area_attack(self):
         now = time()
@@ -109,6 +137,8 @@ class Player(BasePlayer):
         
         self.shoot_last = now
         
+        self.update_health(self.health - 10)
+        
         px, py = self.get_center()
         dx = event.x - px
         dy = event.y - py
@@ -121,7 +151,7 @@ class Player(BasePlayer):
         dy /= distance
         
         self.multiplayer.send({ "type": "projectile", "data": { "coords": [px - 5, py - 5, px + 5, py + 5], "direction": [dx, dy], "speed": self.plrClass["ProjectileSpeed"] } })
-        Projectile(self.canvas, (px - 5, py - 5, px + 5, py + 5), (dx, dy), self.plrClass["ProjectileSpeed"], self.multiplayer.players, self.multiplayer.playerId)
+        Projectile(self.canvas, (px - 5, py - 5, px + 5, py + 5), (dx, dy), self.plrClass["ProjectileSpeed"], self.multiplayer)
         
 class Enemy(BasePlayer):
     def __init__(self, canvas, coords: tuple):
@@ -139,10 +169,11 @@ class Multiplayer:
                             on_message=self.on_message,
                             on_close=self.on_close)
         Thread(target=self.ws.run_forever, daemon=True).start()
-    
+        
     def send(self, msg:dict):
         msg["data"]["id"] = self.playerId
         self.ws.send(dumps(msg))
+        
     
     def on_message(self, ws, msg: str):
         msg: dict = loads(msg)
@@ -153,22 +184,35 @@ class Multiplayer:
             case "login":
                 print(msg)
                 self.playerId = playerId
-                self.player[playerId] = { "shape":  }
                 for plrId, plrData in data["players"].items():
                     print(plrData)
                     if plrId == playerId:
                         continue
                     
                     plr = Enemy(self.canvas, tuple(plrData["coords"]))
-                    self.players[plrId] = { "shape": plr }
-            case "new" | "respawn":
+                    self.players[plrId] = { "shape": plr, "alive": True }
+            case "new":
                 plr = Enemy(self.canvas, data["coords"])
-                self.players[playerId] = { "shape": plr }
+                self.players[playerId] = { "shape": plr, "alive": True }
+            case "respawn":
+                plr = Enemy(self.canvas, data["coords"])
+                self.players[playerId]["alive"] = True
             case "move":
                 plr = self.players[playerId]
                 self.canvas.coords(plr["shape"].shape, *data["coords"])
             case "projectile":
-                proj = Projectile(self.canvas, tuple(data["coords"]), tuple(data["direction"]), data["speed"])
+                proj = Projectile(self.canvas, tuple(data["coords"]), tuple(data["direction"]), data["speed"], self)
+            case "health":
+                plr: Enemy = self.players[playerId]["shape"]
+                plr.update_health(data["health"])
+            case "death":
+                print("death")
+                print(self.players)
+                self.players[playerId]["alive"] = False
+                del self.players[playerId]["shape"]
+            case "leave":
+                del self.players[playerId]["shape"]
+                self.players.pop(playerId)
 
     def on_open(self, ws):
         self.ws.send(dumps({ "type": "login" }))
@@ -178,12 +222,12 @@ class Multiplayer:
         print("Disconnected")
 
 class Game:
-    def __init__(self, root, canvas, plrClass):
+    def __init__(self, root, canvas, plrClass, multiplayer):
         self.root = root
         self.canvas = canvas
         self.canvas.pack()
                 
-        self.multiplayer = Multiplayer(canvas)
+        self.multiplayer = multiplayer
         self.player = Player(self.canvas, plrClass, self.multiplayer, (WIDTH / 2, HEIGHT / 2, WIDTH / 2 + 50, HEIGHT / 2 + 50))
         self.holding_keys = set()
 
@@ -265,7 +309,10 @@ class Menu:
             return
         
         self.canvas.delete("all")
-        Game(self.root, self.canvas, self.classes[self.selected])
+        multiplayer = Multiplayer(self.canvas)
+        while not hasattr(multiplayer, "playerId"):
+            sleep(1)
+        Game(self.root, self.canvas, self.classes[self.selected], multiplayer)
     
     def notify(self, msg):
         self.canvas.itemconfig(self.notif, text=msg)
