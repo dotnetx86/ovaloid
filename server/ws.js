@@ -8,12 +8,6 @@ let players = {};
 
 wss.on('connection', function connection(ws) {
   const clientId = uuidv4();
-
-  players[clientId] = {
-    socket: ws,
-    coords: [WIDTH / 2, HEIGHT / 2, WIDTH / 2 + 50, HEIGHT / 2 + 50],
-    health: 100
-  };
   
   function sendAll(msg, all=false) {
     Object.entries(players).forEach(([id, data]) => {
@@ -23,8 +17,6 @@ wss.on('connection', function connection(ws) {
     })
   }
 
-  sendAll({ type: "new", data: { id: clientId, coords: players[clientId].coords, health: players[clientId].health } });
-  
   console.log('New client connected');
 
   ws.on('message', function incoming(message) {
@@ -33,10 +25,20 @@ wss.on('connection', function connection(ws) {
 
     switch (msg.type) {
       case "login":
+        players[clientId] = {
+          socket: ws,
+          coords: [WIDTH / 2, HEIGHT / 2],
+          health: 100,
+          class: msg.class
+        };
+        
         const res = Object.fromEntries(Object.entries(players).map(([id, data]) => {
           const { socket, ...rest } = data;
           return [id, rest];
         }));
+
+
+        sendAll({ type: "new", data: { id: clientId, coords: players[clientId].coords, class: players[clientId].class } });
         ws.send(JSON.stringify({ type: msg.type, data: { id: clientId, players: res } }));
         break;
       
@@ -54,6 +56,13 @@ wss.on('connection', function connection(ws) {
         if (msg.data.health <= 0) {
           players[clientId].health = 0
           sendAll({ type: "death", data: { id: clientId } }, true)
+          setTimeout(() => {
+            if (!players[clientId]) return
+            console.log("respawnin");
+            players[clientId].health = 100
+            players[clientId].coords = [WIDTH / 2, HEIGHT / 2]
+            sendAll({ type: "respawn", data: { id: clientId, coords: players[clientId].coords } }, true)
+          }, 2000);
         }
 
         players[clientId].health = msg.data.health
