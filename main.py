@@ -1,5 +1,6 @@
 import tkinter as tk
 import websocket
+import maps
 from time import time, sleep
 from threading import Thread
 from math import hypot
@@ -24,10 +25,12 @@ CLASSES = {
         "ProjectileCooldown": 5
     }
 }
+HOST = "ws://193.135.137.2:8080" and "ws://localhost:8080"
 
 class Projectile:
-    def __init__(self, canvas: tk.Canvas, coords: tuple, direction: tuple, shooterId, multiplayer=None):
-        self.canvas = canvas
+    def __init__(self, game, coords: tuple, direction: tuple, shooterId, multiplayer=None):
+        self.game = game
+        self.canvas = self.game.canvas
         self.dx, self.dy = direction
         self.shooterId = shooterId
         self.multiplayer = multiplayer
@@ -42,8 +45,8 @@ class Projectile:
     def move(self):
         self.canvas.move(self.shape, self.dx * self.info["ProjectileSpeed"], self.dy * self.info["ProjectileSpeed"])
         x1, y1, x2, y2 = self.canvas.coords(self.shape)
+        overlapping = set(self.canvas.find_overlapping(x1, y1, x2, y2))
         if self.multiplayer:
-            overlapping = self.canvas.find_overlapping(x1, y1, x2, y2)
             print(overlapping)
             plr:Player = self.multiplayer and self.multiplayer.players[self.playerId]["shape"]
             if plr.shape in overlapping:
@@ -52,16 +55,17 @@ class Projectile:
                 del self
                 return
                 # self.multiplayer.send({ "type": "damage", "data": { "id": self.multiplayer.playerId, "shooter": self.shooterId } })
-        if x2 < 0 or x1 > WIDTH or y2 < 0 or y1 > HEIGHT:
+        if x2 < 0 or x1 > WIDTH or y2 < 0 or y1 > HEIGHT or self.game.objects.intersection(overlapping):
             del self
         else:
             self.canvas.after(30, self.move)
 
 class BasePlayer:
-    def __init__(self, canvas: tk.Canvas, coords: tuple):
-        self.canvas = canvas
+    def __init__(self, game, coords: tuple):
+        self.game = game
+        self.canvas = game.canvas
         self.step = 10
-        self.shape = canvas.create_oval(*self.from_center((0, 0, 50), coords), fill="red", width=2)
+        self.shape = canvas.create_oval(*self.game.from_center((0, 0, 50), coords), fill="red", width=2)
         self.health = 100
         self.alive = True
         self.healthBar = canvas.create_oval(0, 0, 0, 0, fill="black")
@@ -77,7 +81,7 @@ class BasePlayer:
         self.canvas.delete(*(i for i in self.group))
     
     def respawn(self, coords: tuple):
-        self.shape = canvas.create_oval(*self.from_center((0, 0, 50), coords), fill="red", width=2)
+        self.shape = canvas.create_oval(*self.game.from_center((0, 0, 50), coords), fill="red", width=2)
         self.health = 100
         self.healthBar = canvas.create_oval(0, 0, 0, 0, fill="black")
         self.group = [self.shape, self.healthBar]
@@ -97,16 +101,11 @@ class BasePlayer:
     def move(self, x, y):
         for member in self.group:
             pos = self.canvas.coords(member)
-            self.canvas.coords(member, *self.from_center(pos, (x, y)))
+            self.canvas.coords(member, *self.game.from_center(pos, (x, y)))
 
     def get_center(self, coords=None):
         pos = coords or self.canvas.coords(self.shape)
         return (pos[0] + pos[2]) / 2, (pos[1] + pos[3]) / 2
-    
-    def from_center(self, pos, center):
-        r = (pos[2] - pos[0]) / 2
-        
-        return center[0] - r, center[1] - r, center[0] + r, center[1] + r
     
 
     def area_attack(self, check=None):
@@ -129,11 +128,12 @@ class BasePlayer:
         return attack
 
 class Player(BasePlayer):
-    def __init__(self, canvas, plrClass, multiplayer, coords: tuple):
-        super().__init__(canvas, coords)
-        multiplayer.players[multiplayer.playerId] = { "shape": self }
-        self.plrClass = CLASSES[plrClass]
-        self.multiplayer = multiplayer
+    def __init__(self, game, coords: tuple):
+        super().__init__(game, coords)
+        self.game = game
+        self.game.multiplayer.players[self.game.multiplayer.playerId] = { "shape": self }
+        self.plrClass = CLASSES[self.game.plrClass]
+        self.multiplayer = self.game.multiplayer
         self.area_last = 0
         self.dash_last = 0
         self.shoot_last = 0
@@ -152,8 +152,9 @@ class Player(BasePlayer):
         coords = self.canvas.coords(self.shape)
         new_x, x2 = (item + dx * self.step for item in coords[::2])
         new_y, y2 = (item + dy * self.step for item in coords[1::2])
-
-        if 0 <= new_x and x2 <= WIDTH and 0 <= new_y and y2 <= HEIGHT:
+        overlap = set(self.canvas.find_overlapping(new_x, new_y, x2, y2))
+        
+        if 0 <= new_x and x2 <= WIDTH and 0 <= new_y and y2 <= HEIGHT and len(self.game.objects.intersection(overlap)) == 0:
             center = self.get_center((new_x, new_y, x2, y2))
             
             self.multiplayer.send({ "type": "move", "data": { "coords": list(center) } })
@@ -201,12 +202,12 @@ class Player(BasePlayer):
         dy /= distance
         
         self.multiplayer.send({ "type": "projectile", "data": { "coords": [px - 5, py - 5, px + 5, py + 5], "direction": [dx, dy], "speed": self.plrClass["ProjectileSpeed"] } })
-        Projectile(self.canvas, (px - 5, py - 5, px + 5, py + 5), (dx, dy), self)
+        Projectile(self.game, (px - 5, py - 5, px + 5, py + 5), (dx, dy), self)
         
 class Enemy(BasePlayer):
-    def __init__(self, canvas, coords: tuple):
+    def __init__(self, game, coords: tuple):
         print("crea")
-        super().__init__(canvas, coords)
+        super().__init__(game, coords)
         
 class Multiplayer:
     def __init__(self, canvas, plrClass):
@@ -216,7 +217,7 @@ class Multiplayer:
         
         # self.ws
             
-        self.ws = websocket.WebSocketApp("ws://localhost:8080",
+        self.ws = websocket.WebSocketApp(HOST,
                             on_open=self.on_open,
                             on_message=self.on_message,
                             on_close=self.on_close)
@@ -244,10 +245,10 @@ class Multiplayer:
                     if plrId == playerId:
                         continue
                     
-                    plr = Enemy(self.canvas, tuple(plrData["coords"]))
+                    plr = Enemy(self.game, tuple(plrData["coords"]))
                     self.players[plrId] = { "shape": plr, "alive": True, "class": plrData["class"] }
             case "new":
-                plr = Enemy(self.canvas, data["coords"])
+                plr = Enemy(self.game, tuple(data["coords"]))
                 self.players[playerId] = { "shape": plr, "alive": True, "class": data["class"] }
             case "respawn":
                 print("resp")
@@ -257,7 +258,7 @@ class Multiplayer:
                 plr: Enemy = self.players[playerId]["shape"]
                 plr.move(*data["coords"])
             case "projectile":
-                proj = Projectile(self.canvas, tuple(data["coords"]), tuple(data["direction"]), playerId, self)
+                proj = Projectile(self.game, tuple(data["coords"]), tuple(data["direction"]), playerId, self)
             case "health":
                 plr: Enemy = self.players[playerId]["shape"]
                 plr.update_health(data["health"])
@@ -278,14 +279,18 @@ class Multiplayer:
         print("Disconnected")
 
 class Game:
-    def __init__(self, root, canvas, plrClass, multiplayer):
+    def __init__(self, root, canvas: tk.Canvas, plrClass, multiplayer):
         self.root = root
         self.canvas = canvas
         self.canvas.pack()
                 
         self.multiplayer = multiplayer
-        self.player = Player(self.canvas, plrClass, self.multiplayer, (WIDTH / 2, HEIGHT / 2))
+        self.plrClass = plrClass
+        self.player = Player(self, (WIDTH / 2, HEIGHT / 2))
         self.holding_keys = set()
+        
+        self.objects = set()
+        self.load_map(maps.map2)
 
         self.root.bind("<KeyPress>", self.keypress)
         self.root.bind("<KeyRelease>", self.keyrelease)
@@ -293,7 +298,42 @@ class Game:
         # Enemy(canvas, WIDTH / 2, 150)
 
         self.move_loop()
-
+        
+    def load_map(self, layout):
+        for obj in layout:
+            print(obj)
+            self.create_object(obj.copy())
+            print(obj)
+            if obj.get("mirrored"):
+                mask = [WIDTH, HEIGHT, WIDTH, HEIGHT][:len(obj["coords"])]
+                obj["coords"] = list(map(lambda x, y: abs(y - x), obj["coords"], [item if item in obj["mirrored"] else 0 for item in mask]))
+                self.create_object(obj.copy())
+            
+    
+    def create_object(self, aobj):
+        obj = aobj.copy()
+        args = [*obj["coords"]]
+        kwargs = { "fill": obj["fill"] }
+        shape = None
+        match obj["shape"]:
+            case "rect":
+                shape = self.canvas.create_rectangle(*args, **kwargs)
+            
+            case "circle":
+                r = obj["coords"].pop(2)
+                args = [self.from_center(r, obj["coords"])]
+                shape = self.canvas.create_oval(*args, **kwargs)
+        
+        self.objects.add(shape)
+    
+    def from_center(self, pos, center):
+        if type(pos) in [int, float]:
+            r = pos
+        else:
+            r = (pos[2] - pos[0]) / 2
+        
+        return center[0] - r, center[1] - r, center[0] + r, center[1] + r
+    
     def move_loop(self):
         for key in self.holding_keys:
             match key:
@@ -308,15 +348,15 @@ class Game:
         self.canvas.after(25, self.move_loop)
 
     def keypress(self, event):
-        self.holding_keys.add(event.keysym)
-        match event.keysym:
+        self.holding_keys.add(event.keysym.lower())
+        match event.keysym.lower():
             case "q":
                 self.player.dash()
             case "f":
                 self.player.area_attack()
 
     def keyrelease(self, event):
-        self.holding_keys.discard(event.keysym)
+        self.holding_keys.discard(event.keysym.lower())
         
 class Menu:
     def __init__(self, root, canvas: tk.Canvas):
@@ -365,7 +405,7 @@ class Menu:
         multiplayer = Multiplayer(self.canvas, self.selected)
         while not hasattr(multiplayer, "playerId"):
             sleep(1)
-        Game(self.root, self.canvas, self.selected, multiplayer)
+        multiplayer.game = Game(self.root, self.canvas, self.selected, multiplayer)
     
     def notify(self, msg):
         self.canvas.itemconfig(self.notif, text=msg)
