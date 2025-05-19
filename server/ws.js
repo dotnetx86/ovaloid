@@ -3,8 +3,12 @@ const { v4: uuidv4 } = require('uuid');
 
 const WIDTH = 1024;
 const HEIGHT = 768;
+const MAPS = ["map1", "map2"];
+
 const wss = new WebSocket.Server({ port: 8080 });
+
 let players = {};
+let round = {};
 
 wss.on('connection', function connection(ws) {
   const clientId = uuidv4();
@@ -15,6 +19,12 @@ wss.on('connection', function connection(ws) {
   
       data.socket.send(JSON.stringify(msg));
     })
+  }
+
+  if (Object.keys(round).length == 0) {
+    console.log("Round init");
+
+    round.map = MAPS[Math.floor(Math.random() * MAPS.length)];
   }
 
   console.log('New client connected');
@@ -39,7 +49,7 @@ wss.on('connection', function connection(ws) {
 
 
         sendAll({ type: "new", data: { id: clientId, coords: players[clientId].coords, class: players[clientId].class } });
-        ws.send(JSON.stringify({ type: msg.type, data: { id: clientId, players: res } }));
+        ws.send(JSON.stringify({ type: msg.type, data: { id: clientId, players: res, round: round } }));
         break;
       
       case "move":
@@ -51,29 +61,38 @@ wss.on('connection', function connection(ws) {
       case "projectile":
         sendAll({ type: msg.type, data: { id: clientId, coords: msg.data.coords, direction: msg.data.direction, speed: msg.data.speed } });
         break;
+      
+      case "ability":
+        sendAll({ type: msg.type, data: { id: clientId, ability: msg.data.ability } });
+        break;
 
       case "health":
         if (msg.data.health <= 0) {
-          players[clientId].health = 0
-          sendAll({ type: "death", data: { id: clientId } }, true)
+          players[clientId].health = 0;
+          sendAll({ type: "death", data: { id: clientId } }, true);
           setTimeout(() => {
-            if (!players[clientId]) return
+            if (!players[clientId]) return;
             console.log("respawnin");
-            players[clientId].health = 100
-            players[clientId].coords = [WIDTH / 2, HEIGHT / 2]
-            sendAll({ type: "respawn", data: { id: clientId, coords: players[clientId].coords } }, true)
+            players[clientId].health = 100;
+            players[clientId].coords = [WIDTH / 2, HEIGHT / 2];
+            sendAll({ type: "respawn", data: { id: clientId, coords: players[clientId].coords } }, true);
           }, 2000);
         }
 
-        players[clientId].health = msg.data.health
-        sendAll({ type: msg.type, data: { id: clientId, health: msg.data.health } })
+        players[clientId].health = msg.data.health;
+        sendAll({ type: msg.type, data: { id: clientId, health: msg.data.health } });
         break;
     }
   });
 
   ws.on('close', () => {
-    delete players[clientId]
-    sendAll({ type: "leave", data: { id: clientId } })
+    delete players[clientId];
+    sendAll({ type: "leave", data: { id: clientId } });
+    if (Object.keys(players).length == 0) {
+      console.log("no plrs :(");
+      round = {};
+    }
+
     console.log(`Client disconnected clients: ${JSON.stringify(players)}`);
   });
 });
